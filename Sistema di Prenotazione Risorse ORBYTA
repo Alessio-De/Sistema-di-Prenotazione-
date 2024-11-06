@@ -1,0 +1,340 @@
+# models.py
+from django.db import models
+from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
+from datetime import datetime
+
+class Resource(models.Model):
+    RESOURCE_TYPES = [
+        ('LAB', 'Laboratorio'),
+        ('MEETING', 'Sala Riunioni'),
+        ('EQUIPMENT', 'Attrezzatura')
+    ]
+   
+    name = models.CharField(max_length=100)
+    resource_type = models.CharField(max_length=20, choices=RESOURCE_TYPES)
+    capacity = models.IntegerField(null=True, blank=True)
+    description = models.TextField()
+    is_active = models.BooleanField(default=True)
+   
+    def __str__(self):
+        return f"{self.name} ({self.get_resource_type_display()})"
+
+class Booking(models.Model):
+    resource = models.ForeignKey(Resource, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    start_time = models.DateTimeField()
+    end_time = models.DateTimeField()
+    purpose = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+   
+    def clean(self):
+        # Verifica sovrapposizioni
+        overlapping_bookings = Booking.objects.filter(
+            resource=self.resource,
+            start_time__lt=self.end_time,
+            end_time__gt=self.start_time
+        ).exclude(id=self.id)
+       
+        if overlapping_bookings.exists():
+            raise ValidationError('Questa risorsa è già prenotata per il periodo selezionato.')
+   
+    def __str__(self):
+        return f"{self.resource.name} - {self.user.username} - {self.start_time}"
+
+# views.py
+from django.views.generic import ListView, CreateView
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.mail import send_mail
+
+class ResourceListView(LoginRequiredMixin, ListView):
+    model = Resource
+    template_name = 'resources/resource_list.html'
+    context_object_name = 'resources'
+   
+    def get_queryset(self):
+        return Resource.objects.filter(is_active=True)
+
+class BookingCreateView(LoginRequiredMixin, CreateView):
+    model = Booking
+    fields = ['resource', 'start_time', 'end_time', 'purpose']
+    template_name = 'resources/booking_form.html'
+   
+    def form_valid(self, form):
+        form.instance.user = self.request.user
+        response = super().form_valid(form)
+       
+        # Invio notifica email
+        send_mail(
+            'Nuova Prenotazione Confermata',
+            f'La tua prenotazione per {form.instance.resource.name} è stata confermata.',
+            'noreply@orbyta.it',
+            [self.request.user.email],
+            fail_silently=False,
+        )
+       
+        return response
+
+# tasks.py (usando Celery per task asincroni)
+from celery import shared_task
+from datetime import datetime, timedelta
+from django.core.mail import send_mail
+
+@shared_task
+def send_booking_reminder():
+    tomorrow = datetime.now() + timedelta(days=1)
+    bookings = Booking.objects.filter(start_time__date=tomorrow.date())
+   
+    for booking in bookings:
+        send_mail(
+            'Promemoria Prenotazione',
+            f'Ricorda: hai una prenotazione domani per {booking.resource.name}',
+            'noreply@orbyta.it',
+            [booking.user.email],
+            fail_silently=False,
+        )
+
+# urls.py
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('resources/', views.ResourceListView.as_view(), name='resource-list'),
+    path('booking/create/', views.BookingCreateView.as_view(), name='booking-create'),
+]
+
+# settings.py (estratto)
+INSTALLED_APPS = [
+    ...
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'resource_booking',
+    'django_celery_beat',
+]
+
+CELERY_BROKER_URL = 'redis://localhost:6379'
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+Ti presenterò un progetto dettagliato per un Sistema di Prenotazione Risorse utilizzando Django, pensato per il contesto ORBYTA.
+
+
+
+```python
+# models.py
+from django.db import models
+from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
+from datetime import datetime
+
+class Resource(models.Model):
+    RESOURCE_TYPES = [
+        ('LAB', 'Laboratorio'),
+        ('MEETING', 'Sala Riunioni'),
+        ('EQUIPMENT', 'Attrezzatura')
+    ]
+   
+    name = models.CharField(max_length=100)
+    resource_type = models.CharField(max_length=20, choices=RESOURCE_TYPES)
+    capacity = models.IntegerField(null=True, blank=True)
+    description = models.TextField()
+    is_active = models.BooleanField(default=True)
+   
+    def __str__(self):
+        return f"{self.name} ({self.get_resource_type_display()})"
+
+class Booking(models.Model):
+    resource = models.ForeignKey(Resource, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    start_time = models.DateTimeField()
+    end_time = models.DateTimeField()
+    purpose = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+   
+    def clean(self):
+        # Verifica sovrapposizioni
+        overlapping_bookings = Booking.objects.filter(
+            resource=self.resource,
+            start_time__lt=self.end_time,
+            end_time__gt=self.start_time
+        ).exclude(id=self.id)
+       
+        if overlapping_bookings.exists():
+            raise ValidationError('Questa risorsa è già prenotata per il periodo selezionato.')
+   
+    def __str__(self):
+        return f"{self.resource.name} - {self.user.username} - {self.start_time}"
+
+# views.py
+from django.views.generic import ListView, CreateView
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.mail import send_mail
+
+class ResourceListView(LoginRequiredMixin, ListView):
+    model = Resource
+    template_name = 'resources/resource_list.html'
+    context_object_name = 'resources'
+   
+    def get_queryset(self):
+        return Resource.objects.filter(is_active=True)
+
+class BookingCreateView(LoginRequiredMixin, CreateView):
+    model = Booking
+    fields = ['resource', 'start_time', 'end_time', 'purpose']
+    template_name = 'resources/booking_form.html'
+   
+    def form_valid(self, form):
+        form.instance.user = self.request.user
+        response = super().form_valid(form)
+       
+        # Invio notifica email
+        send_mail(
+            'Nuova Prenotazione Confermata',
+            f'La tua prenotazione per {form.instance.resource.name} è stata confermata.',
+            'noreply@orbyta.it',
+            [self.request.user.email],
+            fail_silently=False,
+        )
+       
+        return response
+
+# tasks.py (usando Celery per task asincroni)
+from celery import shared_task
+from datetime import datetime, timedelta
+from django.core.mail import send_mail
+
+@shared_task
+def send_booking_reminder():
+    tomorrow = datetime.now() + timedelta(days=1)
+    bookings = Booking.objects.filter(start_time__date=tomorrow.date())
+   
+    for booking in bookings:
+        send_mail(
+            'Promemoria Prenotazione',
+            f'Ricorda: hai una prenotazione domani per {booking.resource.name}',
+            'noreply@orbyta.it',
+            [booking.user.email],
+            fail_silently=False,
+        )
+
+# urls.py
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('resources/', views.ResourceListView.as_view(), name='resource-list'),
+    path('booking/create/', views.BookingCreateView.as_view(), name='booking-create'),
+]
+
+# settings.py (estratto)
+INSTALLED_APPS = [
+    ...
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'resource_booking',
+    'django_celery_beat',
+]
+
+CELERY_BROKER_URL = 'redis://localhost:6379'
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+```
+
+Descrizione:
+
+1. **Architettura del Sistema**
+
+   a) **Pattern Architetturale**:
+   - Utilizzo del pattern MTV (Model-Template-View) di Django
+   - Separazione delle responsabilità tra models, views e templates
+   - Implementazione di task asincroni con Celery
+
+   b) **Componenti Principali**:
+   - Sistema di autenticazione Django
+   - Database relazionale (PostgreSQL )
+   - Redis per message broker
+   - Sistema email per notifiche
+
+2. **Modelli di Dati**
+
+   a) **Resource Model**:
+   - Gestione diverse tipologie di risorse (laboratori, sale riunioni, attrezzature)
+   - Campi per tracking capacità e disponibilità
+   - Status attivo/inattivo per soft delete
+
+   b) **Booking Model**:
+   - Collegamenti a Resource e User
+   - Gestione temporale delle prenotazioni
+   - Validazione automatica delle sovrapposizioni
+
+3. **Funzionalità Chiave**
+
+   a) **Sistema di Prenotazione**:
+   - Form di prenotazione user-friendly
+   - Validazione automatica disponibilità
+   - Conferma immediata via email
+
+   b) **Gestione Calendario**:
+   - Vista calendario condiviso
+   - Filtri per tipo risorsa
+   - Visualizzazione occupazione
+
+   c) **Sistema di Notifiche**:
+   - Notifiche email automatiche
+   - Promemoria giornalieri
+   - Alert per conflitti
+
+4. **Sicurezza e Permessi**
+
+   a) **Autenticazione**:
+   - Login richiesto per tutte le operazioni
+   - Middleware di sicurezza Django
+   - Protezione CSRF
+
+   b) **Autorizzazione**:
+   - Permessi basati su ruoli
+   - Validazione lato server
+   - Logging delle operazioni
+
+5. **Testing**
+
+```python
+from django.test import TestCase
+from .models import Resource, Booking
+
+class BookingTestCase(TestCase):
+    def setUp(self):
+        self.resource = Resource.objects.create(
+            name="Lab A",
+            resource_type="LAB"
+        )
+   
+    def test_booking_overlap(self):
+        # Test sovrapposizione prenotazioni
+        ...
+
+    def test_notification_system(self):
+        # Test sistema notifiche
+        ...
+```
+
+6. **Deployment**
+
+   a) **Requisiti**:
+   ```txt
+   Django>=4.2.0
+   celery>=5.3.0
+   redis>=4.0.0
+   psycopg2-binary>=2.9.0
+   ```
+
+   b) **Configurazione Produzione**:
+   - Gunicorn come server WSGI
+   - Nginx come reverse proxy
+   - SSL/TLS per sicurezza
+
